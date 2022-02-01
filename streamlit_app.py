@@ -1,7 +1,9 @@
 from functools import partial
+from json import tool
 
 import numpy as np
 import pandas as pd
+import altair as alt
 import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
@@ -10,33 +12,38 @@ from kde_ebm.mixture_model import fit_all_kde_models, fit_all_gmm_models, get_pr
 from kde_ebm.plotting import mixture_model_grid, mcmc_uncert_mat
 from kde_ebm.mcmc import mcmc
 
-'''
-# Interactive Event-based Model for Disease Progression Modelling
+st.title("Interactive Event-based Model for Disease Progression Modelling")
 
+'''
 *Currently in development - caching can be improved*
 
-This is an interactive app to play around with the EBM (event-based model), where we can change the parameters of some synthetic data to see how that effects the resulting EBM.
+This is an interactive app to play around with the EBM (event-based model), where we can change the parameters of some synthetic data to see how the EBM changes.
 
 We'll start by preparing the synthetic data.
 '''
 
-st.subheader("Data Preparation")
+st.header("Data Preparation")
 
 '''
-We'll first select the number of controls (healthy) and patients in the dataset:
+We'll start by setting a seed number for generating the data. With enough samples this should have little effect:
 '''
 # Set the seed number to help with caching
 seed = st.number_input("RNG Seed", min_value=0, step=1, value=42)
 rng = np.random.default_rng(int(seed))
 
+'''
+Then we'll select the number of controls (healthy) and patients in the dataset:
+'''
 # Select number of controls/patients
 left_column, right_column = st.columns(2)
 num_controls = left_column.slider("Number of Controls", min_value=100, max_value=1000, value=500, step=100)
 num_patients = right_column.slider("Number of Patients", min_value=100, max_value=1000, value=500, step=100)
 
-'''
-Now we'll select, for each of 4 hypothetical biomarkers, when in the arbitrary disease timeline pathology begins (the "onset"), and how rapidly the event (i.e. change from normal to abnormal measurement of a biomarker) occurs.
-'''
+st.write("""
+Now we'll select, for each of 4 hypothetical biomarkers, when in the arbitrary disease timeline pathology begins (the "onset"), and how rapidly the event (i.e. the biomarker changes from normal to abnormal) occurs.
+
+To generate our synthetic data, we'll be using simple sigmoid functions of the form $\\frac{1}{(1 + e^{(-a(x-b))})}$. Here, $b$ and $a$ correspond to the onset and gradient respectively that we can modify below.
+""")
 
 def generate_controls(num_controls):
     return rng.normal(
@@ -99,7 +106,7 @@ grad_ranges = {
     "max_value": 1.0,
     "step": 0.05
 }
-
+# Initialize the sigmoids at constant intervals
 init_value = MAX_TIME / 5
 
 # Sliders for biomarker pathology onset
@@ -146,6 +153,11 @@ grad4 = col_rr.slider(
 
 onsets = [onset1, onset2, onset3, onset4]
 grads = [grad1, grad2, grad3, grad4]
+
+'''
+We can also add some noise so that we effectively sample from _around_ the sigmoid:
+'''
+
 # Whether noise is added to the patients
 noise = st.slider("Noise added to patients:", min_value=0.0, max_value=0.5, step=0.05, value=0.1)
 
@@ -155,17 +167,19 @@ patient_times = rng.uniform(
     MAX_TIME,
     num_patients
 )
+print(patient_times)
 
 # Generate the data
 data, sigmoid_funcs = generate_data(num_controls, num_patients, patient_times, onsets, grads, noise)
 
-'''
-### Data Visualization
 
-Let's take a look at what our synthetic data looks like. You can either look at the true (sigmoid) functions and the sampled data, or histograms of the biomarkers colourised by whether they are patients or controls.
+st.header("Data Visualization")
+
+'''
+Let's take a look at what our synthetic data looks like. You can either look at the true (sigmoid) functions with the sampled data, or histograms of the biomarkers colourised by whether they are patients or controls.
 '''
 
-def plot_sigmoids(data, num_patients, num_controls, sigmoid_funcs, colors):
+def plot_sigmoids(data, num_patients, sigmoid_funcs, colors):
     fig, ax = plt.subplots()
 
     # Loop over events/sigmoids
@@ -202,8 +216,15 @@ def plot_sigmoids(data, num_patients, num_controls, sigmoid_funcs, colors):
     ax.legend(loc=(1.05, 0.765))
     return fig, ax
 
+# def plot_sigmoids_alt(df):
+#     df = df.copy()
+#     df.assign
 
-def plot_histograms(df, num_patients, num_controls):
+#     chart = alt.Chart(df).mark_circle().encode(
+#         color=""
+#     )
+
+def plot_histograms(df):
     fig, axs = plt.subplots(2, 2)
 
     axs = axs.flatten()
@@ -236,32 +257,79 @@ df = pd.DataFrame(
     columns=[f"Biomarker {i+1}" for i in range(data.shape[1])]
 )
 # Add labels
-df["Labels"] = ["Patient" for i in range(num_patients)] + ["Control" for i in range(num_controls)]
+df["Labels"] = ["Patient" for _ in range(num_patients)] + ["Control" for _ in range(num_controls)]
 
 # Selection for visualizing the synthetic data
 data_viz = st.radio(
-    "",
+    "Select plot type:",
     ("Sigmoids", "Histograms")
 )
 
 # Colour palette
 colors = sns.color_palette("colorblind")
 
+
 # Select visualization method
 if data_viz == "Sigmoids":
-    fig_viz, ax = plot_sigmoids(data, num_patients, num_controls, sigmoid_funcs, colors)
+    df_alt = df.copy()
+    df_alt.loc[
+        df_alt.Labels == "Patient",
+        "time"
+    ] = patient_times
+    df_alt.loc[
+        df_alt.Labels == "Control",
+        "time"
+    ] = 0
+
+    chart = alt.Chart(df_alt).transform_fold(
+        [f"Biomarker {i+1}" for i in range(data.shape[1])]
+    ).mark_circle().encode(
+        x=alt.X('time:Q', title="Hypothetical Disease Time"),
+        y=alt.Y('value:Q', scale=alt.Scale(domain=(-0.3, 1.3)), title="Sigmoid(t)"),
+        color='key:N',
+        tooltip=["time", "key:N", "Labels"]
+    ).interactive()
+
+    # Can create a dataframe that contains the linspace x values
+    # And the corresponding values for each biomarker
+
+    # Create dummy x-axis values to create sigmoid line
+    dummy_xs = np.linspace(0, MAX_TIME, 500)
+    # Create array to store vals
+    sig_arr = np.empty((dummy_xs.shape[0], 1+len(sigmoid_funcs)))
+    # Insert the x-axis values
+    sig_arr[:, 0] = dummy_xs
+    # Get the sigmoif func values
+    for i, sig_func in enumerate(sigmoid_funcs):
+        sig_arr[:, i+1] = sig_func(dummy_xs)
+    # Turn it into a DataFrame for plotting
+    df_sig = pd.DataFrame(
+        sig_arr,
+        columns=["time"] + [f"Biomarker {i+1}" for i in range(len(sigmoid_funcs))]
+    )
+    # Plot the sigmoids
+    chart_sigmoids = alt.Chart(df_sig).transform_fold(
+        [f"Biomarker {i+1}" for i in range(len(sigmoid_funcs))]
+    ).mark_line().encode(
+        x="time:Q",
+        y="value:Q",
+        color='key:N',
+    )#.interactive()
+
+    st.altair_chart(chart_sigmoids+chart, use_container_width=True)
+    # fig_viz, ax = plot_sigmoids(data, num_patients, sigmoid_funcs, colors)
 
 elif data_viz == "Histograms":
-    fig_viz, axs = plot_histograms(df, num_patients, num_controls)
+    fig_viz, axs = plot_histograms(df)
 
-st.pyplot(fig=fig_viz)
+    st.pyplot(fig=fig_viz)
 
 
 '''
 ### Event-Based Model
 '''
 
-# @st.cache
+@st.cache(allow_output_mutation=True)
 def fit_ebm(data, labels, ebm_method):
     # Positive means worsening
     disease_direction = [1, 1, 1, 1]
@@ -307,8 +375,7 @@ With these mixture models for each biomarker, we can find the maximum likelihood
 
 @st.cache
 def run_mcmc(data, mixtures):
-    with st.spinner("Running MCMC..."):
-        mcmc_samples = mcmc(data, mixtures, plot=False, greedy_n_iter=1000, n_iter=10000)
+    mcmc_samples = mcmc(data, mixtures, plot=False, greedy_n_iter=1000, n_iter=10000)
     num_events = data.shape[1]
     # Get all MCMC orderings
     all_orders = np.array([x.ordering for x in mcmc_samples])
@@ -324,6 +391,7 @@ def run_mcmc(data, mixtures):
 
 num_events = data.shape[1]
 
+# if st.button("RUN (D)MCMC"):
 confusion_mat, mcmc_samples = run_mcmc(data, mixtures)
 
 # Plot the confusion matrix
@@ -364,6 +432,7 @@ def assign_stages(df, mixtures, mcmc_samples):
     df["Stage"] = stages
     return df
 
+# if st.button("Run Staging"):
 df = assign_stages(df, mixtures, mcmc_samples)
 
 # Selection for visualizing the synthetic data
