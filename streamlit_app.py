@@ -15,7 +15,7 @@ from kde_ebm.mcmc import mcmc
 st.title("Interactive Event-based Model for Disease Progression Modelling")
 
 '''
-*Currently in development - caching can be improved*
+*WIP - cross-validation missing!*
 
 This is an interactive app to play around with the EBM (event-based model), where we can change the parameters of some synthetic data to see how the EBM changes.
 
@@ -25,14 +25,14 @@ We'll start by preparing the synthetic data.
 st.header("Data Preparation")
 
 '''
-We'll start by setting a seed number for generating the data. With enough samples this should have little effect:
+Let's first set a random seed number for generating the data. With enough samples this should have little effect, but why not?
 '''
 # Set the seed number to help with caching
 seed = st.number_input("RNG Seed", min_value=0, step=1, value=42)
 rng = np.random.default_rng(int(seed))
 
 '''
-Then we'll select the number of controls (healthy) and patients in the dataset:
+Then we'll select the number of controls (healthy individuals) and patients in the dataset:
 '''
 # Select number of controls/patients
 left_column, right_column = st.columns(2)
@@ -66,11 +66,17 @@ def sigmoid(x, b, a=1):
     return 1/(1 + np.exp(-a*(x-b)))
 
 @st.cache
-def generate_data(num_controls, num_patients, patient_times, onsets, grads, noise):
+def generate_data(num_controls, num_patients, onsets, onset_ranges, grads, noise):
     # Create container for patients
     patients = np.full((num_patients, 4), np.nan)
     # Container for the biomarker functions
     sigmoid_funcs = []
+    # Get all the x-values
+    patient_times = rng.uniform(
+        onset_ranges["min_value"],
+        onset_ranges["max_value"],
+        num_patients
+    )
     # Loop through sigmoids
     for i, (onset, grad) in enumerate(zip(onsets, grads)):
         # Create func for this sigmoid
@@ -88,11 +94,12 @@ def generate_data(num_controls, num_patients, patient_times, onsets, grads, nois
         patients,
         controls
     ])
-    return data, sigmoid_funcs
+    return data, sigmoid_funcs, patient_times
 
 # Cols for biomarker onsets
 col_ll, col_lr, col_rl, col_rr = st.columns(4)
 
+# Maximum disease time
 MAX_TIME = 30
 
 # Ranges for biomarker onsets
@@ -161,95 +168,14 @@ We can also add some noise so that we effectively sample from _around_ the sigmo
 # Whether noise is added to the patients
 noise = st.slider("Noise added to patients:", min_value=0.0, max_value=0.5, step=0.05, value=0.1)
 
-# Get all the x-values
-patient_times = rng.uniform(
-    onset_ranges["min_value"],
-    MAX_TIME,
-    num_patients
-)
-print(patient_times)
-
 # Generate the data
-data, sigmoid_funcs = generate_data(num_controls, num_patients, patient_times, onsets, grads, noise)
-
+data, sigmoid_funcs, patient_times = generate_data(num_controls, num_patients, onsets, onset_ranges, grads, noise)
 
 st.header("Data Visualization")
 
 '''
-Let's take a look at what our synthetic data looks like. You can either look at the true (sigmoid) functions with the sampled data, or histograms of the biomarkers colourised by whether they are patients or controls.
+Let's take a look at what our synthetic data looks like. You can either look at the true (sigmoid) functions with the sampled data, or histograms of the biomarkers coloured by whether they are patients or controls.
 '''
-
-def plot_sigmoids(data, num_patients, sigmoid_funcs, colors):
-    fig, ax = plt.subplots()
-
-    # Loop over events/sigmoids
-    for i, sig_func in enumerate(sigmoid_funcs):
-        # Select the colour
-        c = np.array(colors[i])
-        # Plot the sigmoid line
-        ax.plot(
-            np.linspace(0, MAX_TIME, num_patients),
-            sig_func(np.linspace(0, MAX_TIME, num_patients)),
-            color=c,
-            linestyle="solid",
-            linewidth=3,
-            label=f"Biomarker {i+1}"
-        )
-        # Plot the patients
-        ax.scatter(
-            patient_times,
-            data[:num_patients, i],
-            marker="o",
-            s=10,
-            color=c
-        )
-        # Plot the controls
-        ax.scatter(
-            np.zeros(data[num_patients:, i].shape),
-            data[num_patients:, i],
-            marker="v",
-            s=10,
-            color=c
-        )
-    ax.set_xlabel("Hypothetical Disease Time")
-    ax.set_ylabel("Sigmoid (t)")
-    ax.legend(loc=(1.05, 0.765))
-    return fig, ax
-
-# def plot_sigmoids_alt(df):
-#     df = df.copy()
-#     df.assign
-
-#     chart = alt.Chart(df).mark_circle().encode(
-#         color=""
-#     )
-
-def plot_histograms(df):
-    fig, axs = plt.subplots(2, 2)
-
-    axs = axs.flatten()
-
-    for i, ax in enumerate(axs):
-        if i != 0:
-            sns.histplot(
-                data=df,
-                x=f"Biomarker {i+1}",
-                hue="Labels",
-                bins=50,
-                legend=False,
-                ax=ax
-            )
-        else:
-            sns.histplot(
-                data=df,
-                x=f"Biomarker {i+1}",
-                hue="Labels",
-                bins=50,
-                legend=True,
-                ax=ax
-            )
-    fig.tight_layout()
-    return fig, axs
 
 # Convert data to a DataFrame
 df = pd.DataFrame(
@@ -265,10 +191,6 @@ data_viz = st.radio(
     ("Sigmoids", "Histograms")
 )
 
-# Colour palette
-colors = sns.color_palette("colorblind")
-
-
 # Select visualization method
 if data_viz == "Sigmoids":
     df_alt = df.copy()
@@ -281,18 +203,17 @@ if data_viz == "Sigmoids":
         "time"
     ] = 0
 
+    # Create the chart with the actual sampled data
     chart = alt.Chart(df_alt).transform_fold(
         [f"Biomarker {i+1}" for i in range(data.shape[1])]
     ).mark_circle().encode(
         x=alt.X('time:Q', title="Hypothetical Disease Time"),
         y=alt.Y('value:Q', scale=alt.Scale(domain=(-0.3, 1.3)), title="Sigmoid(t)"),
-        color='key:N',
-        tooltip=["time", "key:N", "Labels"]
+        color=alt.Color('key:N', scale=alt.Scale(scheme='dark2')),
+        tooltip=[alt.Tooltip("time", format=".3f"), "key:N", "Labels"]
     ).interactive()
 
-    # Can create a dataframe that contains the linspace x values
-    # And the corresponding values for each biomarker
-
+    # Now need to plot the underlying sigmoid funcs
     # Create dummy x-axis values to create sigmoid line
     dummy_xs = np.linspace(0, MAX_TIME, 500)
     # Create array to store vals
@@ -313,17 +234,30 @@ if data_viz == "Sigmoids":
     ).mark_line().encode(
         x="time:Q",
         y="value:Q",
-        color='key:N',
-    )#.interactive()
+        color=alt.Color('key:N', scale=alt.Scale(scheme='dark2')),
+    ).interactive()
 
     st.altair_chart(chart_sigmoids+chart, use_container_width=True)
-    # fig_viz, ax = plot_sigmoids(data, num_patients, sigmoid_funcs, colors)
 
 elif data_viz == "Histograms":
-    fig_viz, axs = plot_histograms(df)
+    chart = alt.Chart(df).transform_fold(
+        [f"Biomarker {i+1}" for i in range(data.shape[1])]
+    ).mark_bar(
+        opacity=0.7
+    ).encode(
+        x=alt.X('value:Q', title="Biomarker Value", bin=alt.Bin(maxbins=50)),
+        y=alt.Y('count()', stack=None),
+        color="Labels:N",
+        tooltip=['count()', 'Labels:N', alt.Tooltip('value:Q', bin=alt.Bin(maxbins=50))]
+    ).properties(
+        width=300,
+        height=300
+    ).facet(
+        facet=alt.Facet('key:N', title=None, header=alt.Header(labelFontSize=18)),
+        columns=2
+    )
 
-    st.pyplot(fig=fig_viz)
-
+    st.altair_chart(chart, use_container_width=True)
 
 '''
 ### Event-Based Model
@@ -391,12 +325,19 @@ def run_mcmc(data, mixtures):
 
 num_events = data.shape[1]
 
-# if st.button("RUN (D)MCMC"):
-confusion_mat, mcmc_samples = run_mcmc(data, mixtures)
+'''
+**Press the button below to (re-)run the MCMC!**
+'''
+# Run it for the first time
+if st.button("RUN (D)MCMC") or "mcmc" not in st.session_state:
+    confusion_mat, mcmc_samples = run_mcmc(data, mixtures)
+
+    st.session_state["mcmc"] = mcmc_samples
+    st.session_state["confusion_mat"] = confusion_mat
 
 # Plot the confusion matrix
 fig_pvd, ax = plt.subplots()
-ax.imshow(confusion_mat, cmap="Oranges", vmin=0, vmax=1)
+ax.imshow(st.session_state["confusion_mat"], cmap="Oranges", vmin=0, vmax=1)
 ax.set_xticks(np.arange(num_events))
 ax.set_xticklabels(np.arange(1, num_events+1))
 ax.set_yticks(np.arange(num_events))
@@ -411,11 +352,11 @@ st.pyplot(fig=fig_pvd)
 
 '''
 #### Patient Staging
-With our model, we can then assign (for each individual) a disease stage. We'll plot this for the controls and patients below, where (ideally) the controls should all be at stage 0 (i.e. no disease event has occurred) and the patients are distributed across the events.
+With our model, we can then assign a disease stage to each individual. We'll plot this for the controls and patients below, where (ideally) the controls should all be at stage 0 (i.e. no disease event has occurred) and the patients are distributed across the events.
 
 As we adjust the onset for each biomarker, the proportions of the events should change. In particular, as biomarkers get closer in "time" for disease onset more individuals will concenrate around those stages.
 
-A scatterplot can also be shown, where the colour indicates the stage assigned which should largely follow the generated sigmoids we saw at the start.
+A scatterplot can also be shown, where the colour indicates the stage assigned, which should resemble the generated sigmoids we saw at the start.
 '''
 
 @st.cache
@@ -423,17 +364,14 @@ def assign_stages(df, mixtures, mcmc_samples):
     data = df.drop("Labels", axis=1).values
     # Get probability matrix for normal/abnormal
     prob_mat = get_prob_mat(data, mixtures)
-    
     stages, stage_likelihoods = mcmc_samples[0].stage_data(prob_mat)
     # Calc expected stages
-    expected_stages = (stage_likelihoods.T * np.arange(1,stage_likelihoods.shape[1]+1)[:, None]).T.sum(1) / stage_likelihoods.sum(1) - 1
-    # breakpoint()
-
+    # expected_stages = (stage_likelihoods.T * np.arange(1,stage_likelihoods.shape[1]+1)[:, None]).T.sum(1) / stage_likelihoods.sum(1) - 1
     df["Stage"] = stages
     return df
 
 # if st.button("Run Staging"):
-df = assign_stages(df, mixtures, mcmc_samples)
+df = assign_stages(df, mixtures, st.session_state["mcmc"])
 
 # Selection for visualizing the synthetic data
 stages_viz = st.radio(
@@ -441,41 +379,38 @@ stages_viz = st.radio(
     ("Histogram", "Scatterplot")
 )
 
-fig_stages, ax = plt.subplots()
-
 # Select visualization method
 if stages_viz == "Histogram":
-    sns.histplot(
-        data=df,
-        x="Stage",
-        hue="Labels",
-        bins=50,
-        legend=True,
-        discrete=True,
-        ax=ax
+    chart = alt.Chart(df).mark_bar(
+        opacity=0.7
+    ).encode(
+        x=alt.X('Stage:O', title="Disease Stage", axis=alt.Axis(labelAngle=0)),
+        y=alt.Y('count()', stack=None),
+        color="Labels:N",
+        tooltip=['count()', 'Labels:N', 'Stage:Q']
     )
 
+    st.altair_chart(chart, use_container_width=True)
+
 elif stages_viz == "Scatterplot":
-    # breakpoint()
-    # sns.scatterplot(
-    #     data=df.melt(value_vars=[f"Biomarker {i+1}" for i in range(data.shape[1])], var_name="Biomarker", value_name="Sigmoid (t)"),
-    #     x=np.hstack([np.repeat(patient_times, 4), np.zeros((num_controls*4,))]),
-    #     y="Sigmoid (t)",
-    #     hue="Biomarker",
-    #     palette="viridis",
-    #     ax=ax
-    # )
+    df_alt = df.copy()
+    df_alt.loc[
+        df_alt.Labels == "Patient",
+        "time"
+    ] = patient_times
+    df_alt.loc[
+        df_alt.Labels == "Control",
+        "time"
+    ] = 0
 
-    for biomarker in range(4):
-        ax.scatter(
-            patient_times,
-            data[:num_patients, biomarker],
-            c=df["Stage"].values[:num_patients],
-            cmap="viridis",
-            s=10,
-        )
+    # Create the chart with the actual sampled data
+    chart = alt.Chart(df_alt).transform_fold(
+        [f"Biomarker {i+1}" for i in range(data.shape[1])]
+    ).mark_circle().encode(
+        x=alt.X('time:Q', title="Hypothetical Disease Time"),
+        y=alt.Y('value:Q', scale=alt.Scale(domain=(-0.3, 1.3)), title="Sigmoid(t)"),
+        color=alt.Color('Stage:O', scale=alt.Scale(scheme='dark2')),
+        tooltip=[alt.Tooltip("time", format=".3f"), "Stage:Q", "Labels"]
+    ).interactive()
 
-    ax.set_xlabel("Hypothetical Disease Time")
-    ax.set_ylabel("Sigmoid (t)")
-
-st.pyplot(fig=fig_stages)
+    st.altair_chart(chart, use_container_width=True)
