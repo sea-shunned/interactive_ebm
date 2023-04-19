@@ -1,1 +1,3 @@
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://sea-shunned-interactive-ebm-streamlit-app-52le9j.streamlitapp.com/)
+
+This is a simple Streamlit app to interactively play around with the Event-Based Model (EBM), a disease progression model. For details, see the [original paper](https://doi.org/10.1016/j.neuroimage.2012.01.062) and/or [this page](https://disease-progression-modelling.github.io/pages/models/event_based_model.html) on the DPM GitHub pages site. 
